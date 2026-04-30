@@ -1,3 +1,6 @@
 __pycache__/
 
 .venv/
+
+.tmp-minimal-selfie-tests/
+生图配置

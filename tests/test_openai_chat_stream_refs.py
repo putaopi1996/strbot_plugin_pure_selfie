@@ -275,6 +275,42 @@ class OpenAIChatStreamRefTests(unittest.TestCase):
 
 
 class OpenAIChatEditFallbackTests(unittest.IsolatedAsyncioTestCase):
+    async def test_edit_can_send_remote_reference_urls_without_downloading_inputs(self):
+        mod = _load_module()
+        imgr = _DummyImageManager()
+        final_response = types.SimpleNamespace(
+            choices=[
+                types.SimpleNamespace(
+                    message=types.SimpleNamespace(
+                        content="![image1](https://cdn.example.com/final-edit.png)"
+                    )
+                )
+            ]
+        )
+        client = _DummyClient([final_response])
+        backend = mod.OpenAIChatImageBackend(
+            imgr=imgr,
+            base_url="https://api.example.com/v1",
+            api_keys=["test-key"],
+            default_model="gemini-3.1-flash-image-preview-4k",
+            edit_request_mode="non_stream",
+        )
+        backend._get_client = lambda key: client
+
+        out_path = await backend.edit(
+            "edit into selfie",
+            [],
+            input_image_urls=[
+                "https://img.example.com/ref-1.jpg",
+                "https://img.example.com/ref-2.jpg",
+            ],
+        )
+
+        self.assertEqual(out_path, Path("/tmp/result.png"))
+        parts = client.chat.completions.calls[0]["messages"][0]["content"]
+        self.assertEqual(parts[1]["image_url"]["url"], "https://img.example.com/ref-1.jpg")
+        self.assertEqual(parts[2]["image_url"]["url"], "https://img.example.com/ref-2.jpg")
+
     async def test_edit_retries_with_file_service_url_when_data_uri_is_rejected(self):
         mod = _load_module()
         imgr = _DummyImageManager()

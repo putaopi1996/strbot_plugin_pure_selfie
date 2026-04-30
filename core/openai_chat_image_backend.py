@@ -1000,6 +1000,21 @@ class OpenAIChatImageBackend:
         image_urls: list[str] | None = None,
     ) -> list[dict]:
         parts: list[dict] = [{"type": "text", "text": text}]
+        if image_urls is not None:
+            for image_url in image_urls:
+                image_url = str(image_url or "").strip()
+                if not image_url:
+                    raise RuntimeError("image_urls 涓嶈兘鍖呭惈绌哄€?")
+                parts.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": image_url,
+                        },
+                    }
+                )
+            return parts
+
         for idx, img_bytes in enumerate(images):
             if image_urls is not None:
                 if idx >= len(image_urls):
@@ -1013,6 +1028,26 @@ class OpenAIChatImageBackend:
                     "type": "image_url",
                     "image_url": {
                         "url": image_url,
+                    },
+                }
+            )
+        return parts
+
+    @staticmethod
+    def _build_edit_parts_from_remote_urls(
+        text: str,
+        image_urls: list[str],
+    ) -> list[dict]:
+        parts: list[dict] = [{"type": "text", "text": text}]
+        for image_url in image_urls:
+            normalized = str(image_url or "").strip()
+            if not normalized:
+                raise RuntimeError("image_urls must not contain empty values")
+            parts.append(
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": normalized,
                     },
                 }
             )
@@ -1804,6 +1839,7 @@ class OpenAIChatImageBackend:
         prompt: str,
         images: list[bytes],
         *,
+        input_image_urls: list[str] | None = None,
         model: str | None = None,
         size: str | None = None,
         resolution: str | None = None,
@@ -1811,7 +1847,12 @@ class OpenAIChatImageBackend:
     ) -> Path:
         if not self.supports_edit:
             raise RuntimeError("该后端不支持改图/图生图（chat 模式）")
-        if not images:
+        remote_input_urls = [
+            str(item).strip()
+            for item in (input_image_urls or [])
+            if str(item).strip()
+        ]
+        if not images and not remote_input_urls:
             raise ValueError("至少需要一张图片")
 
         key = self._next_key()
@@ -1832,21 +1873,32 @@ class OpenAIChatImageBackend:
         )
 
         prefetched_image_urls: list[str] | None = None
-        if self._prefer_file_service_url_input:
+        if remote_input_urls:
+            prefetched_image_urls = remote_input_urls
+        elif self._prefer_file_service_url_input:
             prefetched_image_urls = await self._register_input_image_urls(images)
 
-        stream_error: Exception | None = None
-        if self._should_try_stream("edit"):
-            stream_parts = self._build_edit_parts(
-                self._build_edit_text(
-                    prompt,
-                    size=size,
-                    resolution=resolution,
-                    strict_format=False,
-                ),
+        def build_parts(*, strict_format: bool) -> list[dict]:
+            text = self._build_edit_text(
+                prompt,
+                size=size,
+                resolution=resolution,
+                strict_format=strict_format,
+            )
+            if prefetched_image_urls is not None and not images:
+                return self._build_edit_parts_from_remote_urls(
+                    text,
+                    prefetched_image_urls,
+                )
+            return self._build_edit_parts(
+                text,
                 images,
                 image_urls=prefetched_image_urls,
             )
+
+        stream_error: Exception | None = None
+        if self._should_try_stream("edit"):
+            stream_parts = build_parts(strict_format=False)
             try:
                 refs, videos, debug_snippet = await self._run_chat_request_with_retries(
                     lambda: self._stream_chat_completion(
@@ -1876,16 +1928,7 @@ class OpenAIChatImageBackend:
                 stream_error = e
                 logger.warning("[OpenAIChatImage][edit] 流式模式失败，回退非流式: %s", e)
 
-        parts = self._build_edit_parts(
-            self._build_edit_text(
-                prompt,
-                size=size,
-                resolution=resolution,
-                strict_format=True,
-            ),
-            images,
-            image_urls=prefetched_image_urls,
-        )
+        parts = build_parts(strict_format=True)
 
         async def request_edit(parts_payload: list[dict], *, input_mode: str) -> object:
             nonlocal client

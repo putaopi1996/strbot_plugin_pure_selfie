@@ -1,19 +1,10 @@
 name: astrbot_plugin_gitee_aiimg
-display_name: Gitee AI Image
+display_name: Group Selfie Only
 desc: >
-  [主要适配 QQ / aiocqhttp] 多服务商文生图 / 改图 / 自拍参考照 / 视频生成插件，支持文生图预设、改图预设、批量出图、LLM 批量调用、请求模式控制、多 Key 轮询、失败兜底与超时配置。
-version: v4.3.0
-author: 木有知、Zhalslar
+  [主要适配 QQ / aiocqhttp] 彻底精简后的群聊 LLM 自拍插件。只保留指定群自然语言判断、预制提示词、参考图 URL、OpenAI 兼容接口生图，以及每群每日次数限制。
+version: v6.0.0
+author: 木有枝 jhalslar
 astrbot_version: ">=4.16.0,<5"
 support_platforms:
   - aiocqhttp
 repo: https://github.com/muyouzhi6/astrbot_plugin_gitee_aiimg
-
-
-
-
-
-
-
-
-
