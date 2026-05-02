@@ -356,6 +356,54 @@ class MinimalSelfieRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, Path("/tmp/chat-success.jpg"))
 
+    async def test_generate_minimal_selfie_prefers_chat_byte_fallback_before_compat(self):
+        mod = _load_module()
+        plugin = mod.GiteeAIImagePlugin(
+            context=types.SimpleNamespace(),
+            config={
+                "minimal_selfie": {
+                    "enabled": True,
+                    "reference_image_urls": [
+                        "https://img.example.com/1.jpg",
+                        "https://img.example.com/2.jpg",
+                    ],
+                    "api_base_url": "https://api.example.com/v1",
+                    "model": "nano-banana",
+                    "api_token": "token-123",
+                    "image_size": "1024x1024",
+                }
+            },
+        )
+        await plugin.initialize()
+
+        class _ChatBackend:
+            def __init__(self):
+                self.calls = []
+
+            async def edit(self, prompt, images, **kwargs):
+                self.calls.append({"images": images, "kwargs": kwargs})
+                if kwargs.get("input_image_urls"):
+                    raise RuntimeError("remote url path failed")
+                return Path("/tmp/chat-byte-success.jpg")
+
+        class _CompatBackend:
+            def __init__(self):
+                self.calls = 0
+
+            async def edit(self, *args, **kwargs):
+                self.calls += 1
+                raise RuntimeError("compat should not run first")
+
+        plugin._minimal_selfie_chat_backend = _ChatBackend()
+        plugin._minimal_selfie_backend = _CompatBackend()
+        mod.download_image = _async_download_stub
+
+        result = await plugin._generate_minimal_selfie("mirror selfie")
+
+        self.assertEqual(result, Path("/tmp/chat-byte-success.jpg"))
+        self.assertEqual(len(plugin._minimal_selfie_chat_backend.calls), 2)
+        self.assertEqual(plugin._minimal_selfie_backend.calls, 0)
+
     async def test_group_daily_limit_uses_beijing_date_bucket(self):
         mod = _load_module()
         plugin = mod.GiteeAIImagePlugin(

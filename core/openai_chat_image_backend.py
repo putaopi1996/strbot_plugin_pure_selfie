@@ -1910,9 +1910,13 @@ class OpenAIChatImageBackend:
                     ),
                     model=final_model,
                     log_tag="edit",
-                    input_mode="data_url"
-                    if prefetched_image_urls is None
-                    else "file_service_url",
+                    input_mode=(
+                        "data_url"
+                        if prefetched_image_urls is None
+                        else "remote_url"
+                        if remote_input_urls
+                        else "file_service_url"
+                    ),
                 )
                 if refs:
                     return await self._save_from_ref(
@@ -1964,7 +1968,9 @@ class OpenAIChatImageBackend:
             )
             return response
 
-        input_mode = "data_url"
+        input_mode = (
+            "remote_url" if remote_input_urls else "data_url"
+        )
         try:
             resp = await self._run_chat_request_with_retries(
                 lambda: request_edit(parts, input_mode=input_mode),

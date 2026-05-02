@@ -417,7 +417,10 @@ class GiteeAIImagePlugin(Star):
             images.append(data)
 
         last_error: Exception | None = None
-        for backend in backends:
+        fallback_backends = [chat_backend] + [
+            backend for backend in backends if backend is not chat_backend
+        ]
+        for backend in fallback_backends:
             try:
                 return await backend.edit(
                     prompt,
