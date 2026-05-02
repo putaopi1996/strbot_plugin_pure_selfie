@@ -424,6 +424,52 @@ def _iter_strings(obj: object) -> list[str]:
     return out
 
 
+def _extract_error_message(obj: object) -> str | None:
+    if obj is None:
+        return None
+    if isinstance(obj, dict):
+        err = obj.get("error")
+        if isinstance(err, dict):
+            message = str(err.get("message") or "").strip()
+            code = str(err.get("code") or "").strip()
+            err_type = str(err.get("type") or "").strip()
+            parts = [message]
+            if code:
+                parts.append(f"code={code}")
+            if err_type:
+                parts.append(f"type={err_type}")
+            text = " ".join(part for part in parts if part).strip()
+            if text:
+                return text
+        for value in obj.values():
+            nested = _extract_error_message(value)
+            if nested:
+                return nested
+        return None
+    if isinstance(obj, (list, tuple)):
+        for item in obj:
+            nested = _extract_error_message(item)
+            if nested:
+                return nested
+        return None
+    model_dump = getattr(obj, "model_dump", None)
+    if callable(model_dump):
+        try:
+            return _extract_error_message(model_dump())
+        except Exception:
+            return None
+    as_dict = getattr(obj, "dict", None)
+    if callable(as_dict):
+        try:
+            return _extract_error_message(as_dict())
+        except Exception:
+            return None
+    obj_dict = getattr(obj, "__dict__", None)
+    if isinstance(obj_dict, dict):
+        return _extract_error_message(obj_dict)
+    return None
+
+
 def _extract_image_ref_from_content(content: object) -> str | None:
     if content is None:
         return None
@@ -1111,6 +1157,9 @@ class OpenAIChatImageBackend:
                 obj = json.loads(body_text)
             except Exception:
                 return [], [], self._sse_debug_snippet(body_text)
+            error_message = _extract_error_message(obj)
+            if error_message:
+                raise RuntimeError(f"chat 返回错误：{error_message}")
 
             add_ref(_extract_image_ref_from_content(obj))
             add_video(_extract_video_ref_from_content(obj))
@@ -1818,6 +1867,9 @@ class OpenAIChatImageBackend:
 
         logger.info("[OpenAIChatImage][generate] API 响应耗时: %.2fs", time.time() - t0)
         if not ref:
+            error_message = _extract_error_message(resp)
+            if error_message:
+                raise RuntimeError(f"chat 返回错误：{error_message}")
             video_url = await self._extract_video_ref_from_response(resp)
             if video_url:
                 raise RuntimeError(
@@ -2052,6 +2104,9 @@ class OpenAIChatImageBackend:
             pass
 
         if not ref:
+            error_message = _extract_error_message(resp)
+            if error_message:
+                raise RuntimeError(f"chat 返回错误：{error_message}")
             video_url = await self._extract_video_ref_from_response(resp)
             if video_url:
                 raise RuntimeError(

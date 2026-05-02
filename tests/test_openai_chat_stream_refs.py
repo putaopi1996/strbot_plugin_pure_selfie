@@ -394,6 +394,35 @@ class OpenAIChatEditFallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out_path, Path("/tmp/result.png"))
         self.assertFalse(stream_called["value"])
 
+    async def test_edit_surfaces_top_level_error_payload(self):
+        mod = _load_module()
+        imgr = _DummyImageManager()
+        error_response = types.SimpleNamespace(
+            error={
+                "message": "No available accounts",
+                "type": "server_error",
+                "code": "no_available_account",
+            }
+        )
+        client = _DummyClient([error_response])
+        backend = mod.OpenAIChatImageBackend(
+            imgr=imgr,
+            base_url="https://api.example.com/v1",
+            api_keys=["test-key"],
+            default_model="gemini-3.1-flash-image-preview-4k",
+            edit_request_mode="non_stream",
+        )
+        backend._get_client = lambda key: client
+
+        with self.assertRaisesRegex(
+            RuntimeError, "No available accounts.*no_available_account"
+        ):
+            await backend.edit(
+                "edit into selfie",
+                [],
+                input_image_urls=["https://img.example.com/ref-1.jpg"],
+            )
+
 
 class OpenAIChatGenerateFallbackTests(unittest.IsolatedAsyncioTestCase):
     async def test_generate_skips_stream_when_disabled(self):

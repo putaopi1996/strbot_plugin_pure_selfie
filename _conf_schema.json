@@ -20,16 +20,32 @@
         "hint": "会和 LLM 从群消息里补全出的提示词一起拼接后发送给生图模型。",
         "default": "realistic phone selfie, natural skin texture, candid composition, single person, no collage, no text overlay, no watermark"
       },
+      "reference_input_mode": {
+        "type": "string",
+        "description": "参考图输入模式",
+        "options": [
+          "url",
+          "local_file"
+        ],
+        "hint": "Google 官方 Gemini OpenAI 兼容接口建议使用 local_file，本地文件会作为参考图字节上传。",
+        "default": "url"
+      },
       "reference_image_urls": {
         "type": "list",
         "description": "参考图 URL 列表",
-        "hint": "直接填写图床地址，不需要上传。所有 URL 都会被当作同一身份的参考图。",
+        "hint": "非 Google 官方接口可直接填写图床地址。所有 URL 都会被当作同一身份的参考图。",
+        "default": []
+      },
+      "reference_image_files": {
+        "type": "list",
+        "description": "参考图本地文件路径列表",
+        "hint": "Google 官方 Gemini OpenAI 兼容接口请优先使用这一项，填写插件运行机器上的图片绝对路径。",
         "default": []
       },
       "api_base_url": {
         "type": "string",
-        "description": "OpenAI 兼容接口地址",
-        "hint": "例如 https://api.example.com/v1 或具体的 /v1/chat/completions 根地址。",
+        "description": "接口地址",
+        "hint": "普通 OpenAI 兼容服务可填 https://api.example.com/v1。Google 官方 Gemini 请填 https://generativelanguage.googleapis.com/v1beta 或 /v1beta/openai，插件会自动规范为 /openai。",
         "default": ""
       },
       "model": {

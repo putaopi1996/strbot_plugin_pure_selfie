@@ -190,9 +190,14 @@ class MinimalSelfieConfigTests(unittest.TestCase):
                     "enabled": True,
                     "enabled_groups": ["10001", "10002"],
                     "preset_prompt": "cinematic selfie",
+                    "reference_input_mode": "local_file",
                     "reference_image_urls": [
                         "https://img.example.com/a.jpg",
                         "https://img.example.com/b.jpg",
+                    ],
+                    "reference_image_files": [
+                        "E:/refs/a.jpg",
+                        "E:/refs/b.jpg",
                     ],
                     "api_base_url": "https://api.example.com/v1",
                     "model": "gpt-image-1",
@@ -213,13 +218,38 @@ class MinimalSelfieConfigTests(unittest.TestCase):
         self.assertTrue(conf["enabled"])
         self.assertEqual(conf["enabled_groups"], ["10001", "10002"])
         self.assertEqual(conf["preset_prompt"], "cinematic selfie")
+        self.assertEqual(conf["reference_input_mode"], "local_file")
         self.assertEqual(
             conf["reference_image_urls"],
             ["https://img.example.com/a.jpg", "https://img.example.com/b.jpg"],
         )
+        self.assertEqual(
+            conf["reference_image_files"],
+            ["E:/refs/a.jpg", "E:/refs/b.jpg"],
+        )
         self.assertEqual(conf["api_base_url"], "https://api.example.com/v1")
         self.assertEqual(conf["model"], "gpt-image-1")
         self.assertEqual(conf["api_token"], "token-123")
+
+    def test_google_openai_base_url_is_normalized(self):
+        mod = _load_module()
+        plugin = mod.GiteeAIImagePlugin(
+            context=types.SimpleNamespace(),
+            config={},
+        )
+
+        self.assertEqual(
+            plugin._normalize_minimal_selfie_api_base_url(
+                "https://generativelanguage.googleapis.com/v1beta"
+            ),
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+        )
+        self.assertEqual(
+            plugin._normalize_minimal_selfie_api_base_url(
+                "https://generativelanguage.googleapis.com/v1beta/openai/"
+            ),
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+        )
 
     def test_group_rule_lookup_and_prompt(self):
         mod = _load_module()
@@ -276,6 +306,55 @@ class MinimalSelfieConfigTests(unittest.TestCase):
 
 
 class MinimalSelfieRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_generate_minimal_selfie_google_uses_local_reference_files(self):
+        mod = _load_module()
+        plugin = mod.GiteeAIImagePlugin(
+            context=types.SimpleNamespace(),
+            config={
+                "minimal_selfie": {
+                    "enabled": True,
+                    "reference_input_mode": "local_file",
+                    "reference_image_files": [],
+                    "reference_image_urls": [
+                        "https://img.example.com/1.jpg",
+                    ],
+                    "api_base_url": "https://generativelanguage.googleapis.com/v1beta",
+                    "model": "gemini-3.1-flash-image-preview",
+                    "api_token": "token-123",
+                    "image_size": "1024x1024",
+                }
+            },
+        )
+        await plugin.initialize()
+
+        ref_dir = Path.cwd() / ".tmp-minimal-selfie-tests"
+        ref_dir.mkdir(parents=True, exist_ok=True)
+        ref_a = ref_dir / "google-ref-a.png"
+        ref_b = ref_dir / "google-ref-b.png"
+        ref_a.write_bytes(b"file-a")
+        ref_b.write_bytes(b"file-b")
+        plugin.config["minimal_selfie"]["reference_image_files"] = [
+            str(ref_a),
+            str(ref_b),
+        ]
+
+        class _ChatFileBackend:
+            async def edit(self, prompt, images, **kwargs):
+                self.prompt = prompt
+                self.images = images
+                self.kwargs = kwargs
+                return Path("/tmp/chat-file-success.jpg")
+
+        chat_backend = _ChatFileBackend()
+        plugin._minimal_selfie_chat_backend = chat_backend
+        mod.download_image = _download_should_not_run
+
+        result = await plugin._generate_minimal_selfie("mirror selfie")
+
+        self.assertEqual(result, Path("/tmp/chat-file-success.jpg"))
+        self.assertEqual(chat_backend.images, [b"file-a", b"file-b"])
+        self.assertNotIn("input_image_urls", chat_backend.kwargs)
+
     async def test_generate_minimal_selfie_prefers_chat_url_input_before_downloading(self):
         mod = _load_module()
         plugin = mod.GiteeAIImagePlugin(

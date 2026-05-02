@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from astrbot.api import logger
@@ -47,11 +48,12 @@ class GiteeAIImagePlugin(Star):
     async def initialize(self):
         self.imgr = ImageManager(self.config, self.data_dir)
         conf = self._get_minimal_selfie_config()
+        ref_count = len(conf["reference_image_files"]) or len(conf["reference_image_urls"])
         logger.info(
             "[GroupSelfieOnly] enabled=%s groups=%s refs=%s model=%s",
             conf["enabled"],
             conf["enabled_groups"],
-            len(conf["reference_image_urls"]),
+            ref_count,
             conf["model"] or "<empty>",
         )
 
@@ -88,6 +90,29 @@ class GiteeAIImagePlugin(Star):
                 return False
         return default
 
+    @staticmethod
+    def _normalize_minimal_selfie_api_base_url(base_url: str) -> str:
+        normalized = str(base_url or "").strip().rstrip("/")
+        if not normalized:
+            return ""
+        try:
+            parts = urlsplit(normalized)
+        except Exception:
+            return normalized
+        if (parts.hostname or "").lower() != "generativelanguage.googleapis.com":
+            return normalized
+        if (parts.path or "").rstrip("/").endswith("/openai"):
+            return normalized
+        return f"{normalized}/openai"
+
+    @staticmethod
+    def _is_google_official_openai_base_url(base_url: str) -> bool:
+        try:
+            parts = urlsplit(str(base_url or "").strip())
+        except Exception:
+            return False
+        return (parts.hostname or "").lower() == "generativelanguage.googleapis.com"
+
     def _get_minimal_selfie_config(self) -> dict[str, Any]:
         raw = self.config.get("minimal_selfie") or {}
         enabled_groups = [
@@ -95,9 +120,19 @@ class GiteeAIImagePlugin(Star):
             for item in raw.get("enabled_groups", []) or []
             if str(item).strip()
         ]
+        reference_input_mode = str(
+            raw.get("reference_input_mode", "url") or "url"
+        ).strip().lower()
+        if reference_input_mode not in {"url", "local_file"}:
+            reference_input_mode = "url"
         reference_image_urls = [
             str(item).strip()
             for item in raw.get("reference_image_urls", []) or []
+            if str(item).strip()
+        ]
+        reference_image_files = [
+            str(item).strip()
+            for item in raw.get("reference_image_files", []) or []
             if str(item).strip()
         ]
         group_rules: list[dict[str, Any]] = []
@@ -120,18 +155,45 @@ class GiteeAIImagePlugin(Star):
                     ).strip(),
                 }
             )
+
         return {
             "enabled": self._as_bool(raw.get("enabled", True), default=True),
             "enabled_groups": enabled_groups,
             "preset_prompt": str(raw.get("preset_prompt", "") or "").strip(),
+            "reference_input_mode": reference_input_mode,
             "reference_image_urls": reference_image_urls,
-            "api_base_url": str(raw.get("api_base_url", "") or "").strip(),
+            "reference_image_files": reference_image_files,
+            "api_base_url": self._normalize_minimal_selfie_api_base_url(
+                str(raw.get("api_base_url", "") or "").strip()
+            ),
             "model": str(raw.get("model", "") or "").strip(),
             "api_token": str(raw.get("api_token", "") or "").strip(),
             "image_size": str(raw.get("image_size", "1024x1024") or "").strip()
             or "1024x1024",
             "group_rules": group_rules,
         }
+
+    def _should_use_local_reference_files(self, conf: dict[str, Any]) -> bool:
+        mode = str(conf.get("reference_input_mode", "url") or "url").strip().lower()
+        return mode == "local_file" or self._is_google_official_openai_base_url(
+            str(conf.get("api_base_url", "") or "")
+        )
+
+    def _load_minimal_selfie_reference_file_bytes(
+        self, conf: dict[str, Any]
+    ) -> list[bytes]:
+        images: list[bytes] = []
+        for item in conf.get("reference_image_files", []) or []:
+            path = Path(str(item).strip()).expanduser()
+            if not path.exists() or not path.is_file():
+                raise RuntimeError(f"参考图文件不存在: {path}")
+            data = path.read_bytes()
+            if not data:
+                raise RuntimeError(f"参考图文件为空: {path}")
+            images.append(data)
+        if not images:
+            raise RuntimeError("未配置参考图文件")
+        return images
 
     def _is_minimal_selfie_mode(self) -> bool:
         return bool(self._get_minimal_selfie_config()["enabled"])
@@ -168,6 +230,10 @@ class GiteeAIImagePlugin(Star):
         if conf["reference_image_urls"]:
             refs = "\n".join(f"- {url}" for url in conf["reference_image_urls"])
             parts.append(f"Reference image URLs:\n{refs}")
+        elif conf["reference_image_files"]:
+            parts.append(
+                f"Reference image files are attached separately ({len(conf['reference_image_files'])} files)."
+            )
         parts.append(
             "Return one finished selfie image only. No collage, no text overlay, no watermark."
         )
@@ -286,7 +352,7 @@ class GiteeAIImagePlugin(Star):
             if prompt:
                 return prompt
         return (
-            "今天已经不适合再发自拍了。请根据当前群聊语境，自然地找个理由婉拒，"
+            "今天已经不适合再发自拍了。请根据当前群聊语境，自然地找个理由婉拒。"
             "只回复一小段中文聊天消息，不要提额度、配置、限制或系统规则。"
         )
 
@@ -338,9 +404,12 @@ class GiteeAIImagePlugin(Star):
                 if parsed[0]:
                     return parsed
             except Exception as exc:
-                logger.warning("[GroupSelfieOnly] judge failed, fallback to keyword rule: %s", exc)
+                logger.warning(
+                    "[GroupSelfieOnly] judge failed, fallback to keyword rule: %s",
+                    exc,
+                )
         lowered = text.lower()
-        keywords = ("自拍", "自画像", "照片", "来一张", "拍一张", "selfie")
+        keywords = ("自拍", "照片", "来一张", "拍一张", "selfie")
         if any(token in text or token in lowered for token in keywords):
             return True, text
         return False, ""
@@ -367,7 +436,6 @@ class GiteeAIImagePlugin(Star):
         if self.imgr is None:
             raise RuntimeError("image manager is not initialized")
         conf = self._get_minimal_selfie_config()
-        compat_backend = self._get_minimal_selfie_backend()
         if self._minimal_selfie_chat_backend is None:
             self._minimal_selfie_chat_backend = OpenAIChatImageBackend(
                 imgr=self.imgr,
@@ -379,6 +447,9 @@ class GiteeAIImagePlugin(Star):
                 supports_edit=True,
                 edit_request_mode="stream",
             )
+        if self._is_google_official_openai_base_url(conf["api_base_url"]):
+            return [self._minimal_selfie_chat_backend]
+        compat_backend = self._get_minimal_selfie_backend()
         return [compat_backend, self._minimal_selfie_chat_backend]
 
     async def _generate_minimal_selfie(self, prompt: str) -> Path:
@@ -389,32 +460,42 @@ class GiteeAIImagePlugin(Star):
             raise RuntimeError("未配置模型")
         if not conf["api_token"]:
             raise RuntimeError("未配置令牌")
-        if not conf["reference_image_urls"]:
+
+        use_local_files = self._should_use_local_reference_files(conf)
+        if use_local_files:
+            if not conf["reference_image_files"]:
+                raise RuntimeError("当前接口需要配置本地参考图文件")
+        elif not conf["reference_image_urls"]:
             raise RuntimeError("未配置参考图 URL")
 
         backends = self._get_minimal_selfie_backends()
         chat_backend = backends[-1]
-        try:
-            return await chat_backend.edit(
-                prompt,
-                [],
-                model=conf["model"],
-                size=conf["image_size"],
-                input_image_urls=conf["reference_image_urls"],
-            )
-        except Exception as exc:
-            logger.warning(
-                "[GroupSelfieOnly] remote URL edit via %s failed, falling back to downloaded uploads: %s",
-                chat_backend.__class__.__name__,
-                exc,
-            )
 
-        images: list[bytes] = []
-        for url in conf["reference_image_urls"]:
-            data = await download_image(url)
-            if not data:
-                raise RuntimeError(f"参考图下载失败: {url}")
-            images.append(data)
+        if not use_local_files:
+            try:
+                return await chat_backend.edit(
+                    prompt,
+                    [],
+                    model=conf["model"],
+                    size=conf["image_size"],
+                    input_image_urls=conf["reference_image_urls"],
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[GroupSelfieOnly] remote URL edit via %s failed, falling back to downloaded uploads: %s",
+                    chat_backend.__class__.__name__,
+                    exc,
+                )
+
+        if use_local_files:
+            images = self._load_minimal_selfie_reference_file_bytes(conf)
+        else:
+            images = []
+            for url in conf["reference_image_urls"]:
+                data = await download_image(url)
+                if not data:
+                    raise RuntimeError(f"参考图下载失败: {url}")
+                images.append(data)
 
         last_error: Exception | None = None
         fallback_backends = [chat_backend] + [
@@ -463,6 +544,7 @@ class GiteeAIImagePlugin(Star):
         self, event: AstrMessageEvent, image_path: Path
     ) -> SendImageResult:
         path = Path(image_path)
+        last_error = ""
         try:
             await event.send(event.chain_result([Image.fromFileSystem(str(path))]))
             return SendImageResult(ok=True)
@@ -504,7 +586,7 @@ class GiteeAIImagePlugin(Star):
             return
 
         message_text = str(getattr(event, "message_str", "") or "").strip()
-        if not message_text or message_text.startswith(("/", "!", "！", ".", "。", "．")):
+        if not message_text or message_text.startswith(("/", "!", "？", ".", "。", "，")):
             return
 
         should_generate, llm_prompt = await self._judge_minimal_selfie_request(message_text)
@@ -512,7 +594,9 @@ class GiteeAIImagePlugin(Star):
             return
 
         if not await self._try_reserve_minimal_selfie_group_quota(group_id):
-            reject_text = await self._generate_minimal_selfie_limit_reply(group_id, message_text)
+            reject_text = await self._generate_minimal_selfie_limit_reply(
+                group_id, message_text
+            )
             yield event.plain_result(reject_text)
             event.stop_event()
             return
