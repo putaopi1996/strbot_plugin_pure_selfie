@@ -210,7 +210,7 @@ class GiteeAIImagePlugin(Star):
             raise RuntimeError("UploadedRefsManager is not initialized")
         images = self._refs_manager.load_reference_bytes()
         if not images:
-            raise RuntimeError("鏈厤缃弬鑰冨浘鏂囦欢")
+            raise RuntimeError("\u672a\u914d\u7f6e\u53c2\u8003\u56fe\u6587\u4ef6")
         return images
 
     def _is_minimal_selfie_mode(self) -> bool:
@@ -368,8 +368,8 @@ class GiteeAIImagePlugin(Star):
             if prompt:
                 return prompt
         return (
-            "浠婂ぉ宸茬粡涓嶉€傚悎鍐嶅彂鑷媿浜嗐€傝鏍规嵁褰撳墠缇よ亰璇锛岃嚜鐒跺湴鎵句釜鐞嗙敱濠夋嫆銆?
-            "鍙洖澶嶄竴灏忔涓枃鑱婂ぉ娑堟伅锛屼笉瑕佹彁棰濆害銆侀厤缃€侀檺鍒舵垨绯荤粺瑙勫垯銆?
+            "\u4eca\u5929\u5df2\u7ecf\u4e0d\u9002\u5408\u518d\u53d1\u81ea\u62cd\u4e86\u3002\u8bf7\u6839\u636e\u5f53\u524d\u7fa4\u804a\u8bed\u5883\uff0c\u81ea\u7136\u5730\u627e\u4e2a\u7406\u7531\u5a49\u62d2\u3002"
+            "\u53ea\u56de\u590d\u4e00\u5c0f\u6bb5\u4e2d\u6587\u804a\u5929\u6d88\u606f\uff0c\u4e0d\u8981\u63d0\u989d\u5ea6\u3001\u914d\u7f6e\u3001\u9650\u5236\u6216\u7cfb\u7edf\u89c4\u5219\u3002"
         )
 
     async def _generate_minimal_selfie_limit_reply(
@@ -381,8 +381,8 @@ class GiteeAIImagePlugin(Star):
             try:
                 response = await provider.text_chat(
                     prompt=(
-                        f"缇ゅ弸鍒氬垰璇达細{str(user_message or '').strip()}\n\n"
-                        "璇风洿鎺ュ洖澶嶄竴鏉＄畝鐭嚜鐒剁殑涓枃鑱婂ぉ娑堟伅銆?
+                        f"\u7fa4\u53cb\u521a\u521a\u8bf4\uff1a{str(user_message or '').strip()}\n\n"
+                        "\u8bf7\u76f4\u63a5\u56de\u590d\u4e00\u6761\u7b80\u77ed\u81ea\u7136\u7684\u4e2d\u6587\u804a\u5929\u6d88\u606f\u3002"
                     ),
                     contexts=[],
                     image_urls=[],
@@ -394,7 +394,7 @@ class GiteeAIImagePlugin(Star):
                     return text
             except Exception as exc:
                 logger.warning("[PureSelfie] limit reply llm failed: %s", exc)
-        return "浠婂ぉ鍏堜笉鍙戣嚜鎷嶅暒锛屾櫄鐐瑰啀鏉ユ壘鎴戝惂銆?
+        return "\u4eca\u5929\u5148\u4e0d\u53d1\u81ea\u62cd\u5566\uff0c\u665a\u70b9\u518d\u6765\u627e\u6211\u5427\u3002"
 
     async def _judge_minimal_selfie_request(self, message_text: str) -> tuple[bool, str]:
         text = str(message_text or "").strip()
@@ -405,10 +405,10 @@ class GiteeAIImagePlugin(Star):
             try:
                 response = await provider.text_chat(
                     prompt=(
-                        "鍒ゆ柇杩欐潯缇よ亰娑堟伅鏄笉鏄湪瑕佹眰鏈哄櫒浜虹敓鎴愪竴寮犺嚜鎷嶅浘銆?
-                        "濡傛灉鏄紝璇疯ˉ鎴愮畝娲佺殑鑻辨枃鎴栦腑鑻辨贩鍚堝浘鍍忔彁绀鸿瘝銆?
-                        '鍙緭鍑?JSON锛歿"generate": true/false, "prompt": "..."}銆俓n\n'
-                        f"鐢ㄦ埛娑堟伅锛歿text}"
+                        "\u5224\u65ad\u8fd9\u6761\u7fa4\u804a\u6d88\u606f\u662f\u4e0d\u662f\u5728\u8981\u6c42\u673a\u5668\u4eba\u751f\u6210\u4e00\u5f20\u81ea\u62cd\u56fe\u3002"
+                        "\u5982\u679c\u662f\uff0c\u8bf7\u8865\u6210\u7b80\u6d01\u7684\u82f1\u6587\u6216\u4e2d\u82f1\u6df7\u5408\u56fe\u50cf\u63d0\u793a\u8bcd\u3002"
+                        '\u53ea\u8f93\u51fa JSON\uff1a{"generate": true/false, "prompt": "..."}\u3002\n\n'
+                        f"\u7528\u6237\u6d88\u606f\uff1a{text}"
                     ),
                     contexts=[],
                     image_urls=[],
@@ -425,7 +425,7 @@ class GiteeAIImagePlugin(Star):
                     exc,
                 )
         lowered = text.lower()
-        keywords = ("鑷媿", "鐓х墖", "鏉ヤ竴寮?, "鎷嶄竴寮?, "selfie")
+        keywords = ("\u81ea\u62cd", "\u7167\u7247", "\u6765\u4e00\u5f20", "\u62cd\u4e00\u5f20", "selfie")
         if any(token in text or token in lowered for token in keywords):
             return True, text
         return False, ""
@@ -471,11 +471,11 @@ class GiteeAIImagePlugin(Star):
     async def _generate_minimal_selfie(self, prompt: str) -> Path:
         conf = self._get_minimal_selfie_config()
         if not conf["api_base_url"]:
-            raise RuntimeError("鏈厤缃?API 鍦板潃")
+            raise RuntimeError("\u672a\u914d\u7f6e API \u5730\u5740")
         if not conf["model"]:
-            raise RuntimeError("鏈厤缃ā鍨?)
+            raise RuntimeError("\u672a\u914d\u7f6e\u6a21\u578b")
         if not conf["api_token"]:
-            raise RuntimeError("鏈厤缃护鐗?)
+            raise RuntimeError("\u672a\u914d\u7f6e\u4ee4\u724c")
 
         size_arg = self._resolve_minimal_selfie_size_arg(conf)
         images = self._load_minimal_selfie_reference_file_bytes()
@@ -502,7 +502,7 @@ class GiteeAIImagePlugin(Star):
                     backend.__class__.__name__,
                     exc,
                 )
-        raise last_error or RuntimeError("娌℃湁鍙敤鐨勭敓鍥惧悗绔?)
+        raise last_error or RuntimeError("\u6ca1\u6709\u53ef\u7528\u7684\u751f\u56fe\u540e\u7aef")
 
     async def _begin_user_job(self, user_id: str) -> bool:
         uid = str(user_id or "").strip()
@@ -572,7 +572,7 @@ class GiteeAIImagePlugin(Star):
             return
 
         message_text = str(getattr(event, "message_str", "") or "").strip()
-        if not message_text or message_text.startswith(("/", "!", "锛?, ".", "銆?, "锛?)):
+        if not message_text or message_text.startswith(("/", "!", "\uff1f", ".", "\u3002", "\uff0c")):
             return
 
         # ignore_keywords check: skip entirely if message contains any keyword
@@ -598,7 +598,7 @@ class GiteeAIImagePlugin(Star):
         user_id = str(event.get_sender_id() or "").strip()
         if not await self._begin_user_job(user_id):
             await self._release_minimal_selfie_group_quota(group_id)
-            yield event.plain_result("浣犲綋鍓嶈繕鏈変竴寮犺嚜鎷嶄换鍔″湪澶勭悊涓紝绋嶇瓑涓€涓嬪啀鍙戙€?)
+            yield event.plain_result("\u4f60\u5f53\u524d\u8fd8\u6709\u4e00\u5f20\u81ea\u62cd\u4efb\u52a1\u5728\u5904\u7406\u4e2d\uff0c\u7a0d\u7b49\u4e00\u4e0b\u518d\u53d1\u3002")
             event.stop_event()
             return
 
@@ -613,13 +613,13 @@ class GiteeAIImagePlugin(Star):
                 await self._release_minimal_selfie_group_quota(group_id)
                 await mark_failed(event)
                 yield event.plain_result(
-                    f"鍥剧墖鍙戦€佸け璐ワ細{sent.reason or sent.last_error or 'unknown'}"
+                    f"\u56fe\u7247\u53d1\u9001\u5931\u8d25\uff1a{sent.reason or sent.last_error or 'unknown'}"
                 )
         except Exception as exc:
             await self._release_minimal_selfie_group_quota(group_id)
             await mark_failed(event)
             yield event.plain_result(
-                f"鑷媿鐢熸垚澶辫触锛歿self._summarize_status_text(exc, fallback='unknown error')}"
+                f"\u81ea\u62cd\u751f\u6210\u5931\u8d25\uff1a{self._summarize_status_text(exc, fallback='unknown error')}"
             )
         finally:
             await self._end_user_job(user_id)
