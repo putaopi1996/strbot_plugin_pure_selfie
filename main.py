@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import json
@@ -18,7 +18,8 @@ from .core.emoji_feedback import mark_failed, mark_processing, mark_success
 from .core.image_manager import ImageManager
 from .core.openai_chat_image_backend import OpenAIChatImageBackend
 from .core.openai_compat_backend import OpenAICompatBackend
-from .core.utils import close_session, download_image
+from .core.uploaded_refs import UploadedRefsManager
+from .core.utils import close_session
 
 
 @dataclass(slots=True)
@@ -33,19 +34,13 @@ class SendImageResult:
 
 class GiteeAIImagePlugin(Star):
     IMAGE_AS_FILE_THRESHOLD_BYTES: int = 20 * 1024 * 1024
-    REFERENCE_IMAGE_EXTENSIONS: tuple[str, ...] = (
-        ".png",
-        ".jpg",
-        ".jpeg",
-        ".webp",
-        ".gif",
-    )
 
     def __init__(self, context: Context, config: dict):
         super().__init__(context)
         self.config = config if isinstance(config, dict) else {}
         self.data_dir = StarTools.get_data_dir("astrbot_plugin_gitee_aiimg")
         self.imgr: ImageManager | None = None
+        self._refs_manager: UploadedRefsManager | None = None
         self._concurrency_lock = asyncio.Lock()
         self._image_inflight: dict[str, int] = {}
         self._minimal_selfie_backend: OpenAICompatBackend | None = None
@@ -54,30 +49,39 @@ class GiteeAIImagePlugin(Star):
 
     async def initialize(self):
         self.imgr = ImageManager(self.config, self.data_dir)
-        conf = self._get_minimal_selfie_config()
-        ref_count = len(conf["resolved_reference_images"]) or len(
-            conf["reference_image_urls"]
-        )
+
+        # Initialize UploadedRefsManager and sync reference images
+        self._refs_manager = UploadedRefsManager(Path(self.data_dir) / "uploaded_refs")
+        reference_images = self.config.get("minimal_selfie", {}).get("reference_images", [])
+        sync_result = self._refs_manager.sync(reference_images)
         logger.info(
-            "[GroupSelfieOnly] enabled=%s groups=%s refs=%s model=%s image_size=%s",
+            "[PureSelfie] refs synced: %d files, %d bytes total",
+            sync_result.total_files,
+            sync_result.total_bytes,
+        )
+
+        # Detect legacy fields and log deprecation warning
+        raw_minimal = self.config.get("minimal_selfie") or {}
+        legacy_fields = [
+            f for f in ("reference_image_urls", "reference_image_files", "reference_image_dir")
+            if f in raw_minimal and raw_minimal[f]
+        ]
+        if legacy_fields:
+            logger.warning(
+                "[PureSelfie] Deprecated config fields detected: %s. "
+                "These fields are ignored; use 'reference_images' (WebUI file upload) instead.",
+                ", ".join(legacy_fields),
+            )
+
+        conf = self._get_minimal_selfie_config()
+        logger.info(
+            "[PureSelfie] enabled=%s groups=%s refs=%d model=%s image_size=%s",
             conf["enabled"],
             conf["enabled_groups"],
-            ref_count,
+            sync_result.total_files,
             conf["model"] or "<empty>",
             conf["image_size"],
         )
-        if conf["reference_image_dir"]:
-            logger.info(
-                "[GroupSelfieOnly] reference_image_dir=%s resolved=%s files=%s",
-                conf["reference_image_dir"],
-                len(conf["resolved_reference_images"]),
-                conf["resolved_reference_images"],
-            )
-        elif conf["resolved_reference_images"]:
-            logger.info(
-                "[GroupSelfieOnly] reference_image_files=%s",
-                conf["resolved_reference_images"],
-            )
 
     async def terminate(self):
         try:
@@ -135,20 +139,6 @@ class GiteeAIImagePlugin(Star):
             return False
         return (parts.hostname or "").lower() == "generativelanguage.googleapis.com"
 
-    @classmethod
-    def _scan_reference_image_dir(cls, directory: str) -> list[str]:
-        raw = str(directory or "").strip()
-        if not raw:
-            return []
-        path = Path(raw).expanduser()
-        if not path.exists() or not path.is_dir():
-            return []
-        return [
-            str(item)
-            for item in sorted(path.iterdir())
-            if item.is_file() and item.suffix.lower() in cls.REFERENCE_IMAGE_EXTENSIONS
-        ]
-
     @staticmethod
     def _normalize_minimal_selfie_image_size(value: Any) -> str:
         text = str(value or "").strip().lower()
@@ -164,16 +154,6 @@ class GiteeAIImagePlugin(Star):
         resolved = str(conf.get("image_size", "") or "").strip()
         return resolved or None
 
-    @classmethod
-    def _resolve_minimal_selfie_reference_images(
-        cls, reference_image_files: list[str], reference_image_dir: str
-    ) -> list[str]:
-        resolved = [str(item).strip() for item in reference_image_files if str(item).strip()]
-        for item in cls._scan_reference_image_dir(reference_image_dir):
-            if item not in resolved:
-                resolved.append(item)
-        return resolved
-
     def _get_minimal_selfie_config(self) -> dict[str, Any]:
         raw = self.config.get("minimal_selfie") or {}
         enabled_groups = [
@@ -181,26 +161,12 @@ class GiteeAIImagePlugin(Star):
             for item in raw.get("enabled_groups", []) or []
             if str(item).strip()
         ]
-        reference_input_mode = str(
-            raw.get("reference_input_mode", "url") or "url"
-        ).strip().lower()
-        if reference_input_mode not in {"url", "local_file"}:
-            reference_input_mode = "url"
-        reference_image_urls = [
-            str(item).strip()
-            for item in raw.get("reference_image_urls", []) or []
-            if str(item).strip()
+
+        ignore_keywords = [
+            s
+            for item in raw.get("ignore_keywords", []) or []
+            if (s := str(item).strip())
         ]
-        reference_image_files = [
-            str(item).strip()
-            for item in raw.get("reference_image_files", []) or []
-            if str(item).strip()
-        ]
-        reference_image_dir = str(raw.get("reference_image_dir", "") or "").strip()
-        resolved_reference_images = self._resolve_minimal_selfie_reference_images(
-            reference_image_files,
-            reference_image_dir,
-        )
 
         group_rules: list[dict[str, Any]] = []
         for item in raw.get("group_rules", []) or []:
@@ -227,11 +193,6 @@ class GiteeAIImagePlugin(Star):
             "enabled": self._as_bool(raw.get("enabled", True), default=True),
             "enabled_groups": enabled_groups,
             "preset_prompt": str(raw.get("preset_prompt", "") or "").strip(),
-            "reference_input_mode": reference_input_mode,
-            "reference_image_urls": reference_image_urls,
-            "reference_image_files": reference_image_files,
-            "reference_image_dir": reference_image_dir,
-            "resolved_reference_images": resolved_reference_images,
             "api_base_url": self._normalize_minimal_selfie_api_base_url(
                 str(raw.get("api_base_url", "") or "").strip()
             ),
@@ -240,29 +201,16 @@ class GiteeAIImagePlugin(Star):
             "image_size": self._normalize_minimal_selfie_image_size(
                 raw.get("image_size", "auto")
             ),
+            "ignore_keywords": ignore_keywords,
             "group_rules": group_rules,
         }
 
-    def _should_use_local_reference_files(self, conf: dict[str, Any]) -> bool:
-        mode = str(conf.get("reference_input_mode", "url") or "url").strip().lower()
-        return mode == "local_file" or self._is_google_official_openai_base_url(
-            str(conf.get("api_base_url", "") or "")
-        )
-
-    def _load_minimal_selfie_reference_file_bytes(
-        self, conf: dict[str, Any]
-    ) -> list[bytes]:
-        images: list[bytes] = []
-        for item in conf.get("resolved_reference_images", []) or []:
-            path = Path(str(item).strip()).expanduser()
-            if not path.exists() or not path.is_file():
-                raise RuntimeError(f"参考图文件不存在: {path}")
-            data = path.read_bytes()
-            if not data:
-                raise RuntimeError(f"参考图文件为空: {path}")
-            images.append(data)
+    def _load_minimal_selfie_reference_file_bytes(self) -> list[bytes]:
+        if self._refs_manager is None:
+            raise RuntimeError("UploadedRefsManager is not initialized")
+        images = self._refs_manager.load_reference_bytes()
         if not images:
-            raise RuntimeError("未配置参考图文件")
+            raise RuntimeError("鏈厤缃弬鑰冨浘鏂囦欢")
         return images
 
     def _is_minimal_selfie_mode(self) -> bool:
@@ -297,12 +245,10 @@ class GiteeAIImagePlugin(Star):
             parts.append(f"Preset requirements:\n{conf['preset_prompt']}")
         if str(llm_prompt or "").strip():
             parts.append(f"Dynamic user intent:\n{str(llm_prompt).strip()}")
-        if conf["reference_image_urls"]:
-            refs = "\n".join(f"- {url}" for url in conf["reference_image_urls"])
-            parts.append(f"Reference image URLs:\n{refs}")
-        elif conf["resolved_reference_images"]:
+        ref_count = len(self._refs_manager.list_reference_files()) if self._refs_manager else 0
+        if ref_count > 0:
             parts.append(
-                f"Reference image files are attached separately ({len(conf['resolved_reference_images'])} files)."
+                f"Reference image files are attached separately ({ref_count} files)."
             )
         parts.append(
             "Return one finished selfie image only. No collage, no text overlay, no watermark."
@@ -422,8 +368,8 @@ class GiteeAIImagePlugin(Star):
             if prompt:
                 return prompt
         return (
-            "今天已经不适合再发自拍了。请根据当前群聊语境，自然地找个理由婉拒。"
-            "只回复一小段中文聊天消息，不要提额度、配置、限制或系统规则。"
+            "浠婂ぉ宸茬粡涓嶉€傚悎鍐嶅彂鑷媿浜嗐€傝鏍规嵁褰撳墠缇よ亰璇锛岃嚜鐒跺湴鎵句釜鐞嗙敱濠夋嫆銆?
+            "鍙洖澶嶄竴灏忔涓枃鑱婂ぉ娑堟伅锛屼笉瑕佹彁棰濆害銆侀厤缃€侀檺鍒舵垨绯荤粺瑙勫垯銆?
         )
 
     async def _generate_minimal_selfie_limit_reply(
@@ -435,8 +381,8 @@ class GiteeAIImagePlugin(Star):
             try:
                 response = await provider.text_chat(
                     prompt=(
-                        f"群友刚刚说：{str(user_message or '').strip()}\n\n"
-                        "请直接回复一条简短自然的中文聊天消息。"
+                        f"缇ゅ弸鍒氬垰璇达細{str(user_message or '').strip()}\n\n"
+                        "璇风洿鎺ュ洖澶嶄竴鏉＄畝鐭嚜鐒剁殑涓枃鑱婂ぉ娑堟伅銆?
                     ),
                     contexts=[],
                     image_urls=[],
@@ -447,8 +393,8 @@ class GiteeAIImagePlugin(Star):
                 if text:
                     return text
             except Exception as exc:
-                logger.warning("[GroupSelfieOnly] limit reply llm failed: %s", exc)
-        return "今天先不发自拍啦，晚点再来找我吧。"
+                logger.warning("[PureSelfie] limit reply llm failed: %s", exc)
+        return "浠婂ぉ鍏堜笉鍙戣嚜鎷嶅暒锛屾櫄鐐瑰啀鏉ユ壘鎴戝惂銆?
 
     async def _judge_minimal_selfie_request(self, message_text: str) -> tuple[bool, str]:
         text = str(message_text or "").strip()
@@ -459,10 +405,10 @@ class GiteeAIImagePlugin(Star):
             try:
                 response = await provider.text_chat(
                     prompt=(
-                        "判断这条群聊消息是不是在要求机器人生成一张自拍图。"
-                        "如果是，请补成简洁的英文或中英混合图像提示词。"
-                        '只输出 JSON：{"generate": true/false, "prompt": "..."}。\n\n'
-                        f"用户消息：{text}"
+                        "鍒ゆ柇杩欐潯缇よ亰娑堟伅鏄笉鏄湪瑕佹眰鏈哄櫒浜虹敓鎴愪竴寮犺嚜鎷嶅浘銆?
+                        "濡傛灉鏄紝璇疯ˉ鎴愮畝娲佺殑鑻辨枃鎴栦腑鑻辨贩鍚堝浘鍍忔彁绀鸿瘝銆?
+                        '鍙緭鍑?JSON锛歿"generate": true/false, "prompt": "..."}銆俓n\n'
+                        f"鐢ㄦ埛娑堟伅锛歿text}"
                     ),
                     contexts=[],
                     image_urls=[],
@@ -475,11 +421,11 @@ class GiteeAIImagePlugin(Star):
                     return parsed
             except Exception as exc:
                 logger.warning(
-                    "[GroupSelfieOnly] judge failed, fallback to keyword rule: %s",
+                    "[PureSelfie] judge failed, fallback to keyword rule: %s",
                     exc,
                 )
         lowered = text.lower()
-        keywords = ("自拍", "照片", "来一张", "拍一张", "selfie")
+        keywords = ("鑷媿", "鐓х墖", "鏉ヤ竴寮?, "鎷嶄竴寮?, "selfie")
         if any(token in text or token in lowered for token in keywords):
             return True, text
         return False, ""
@@ -525,48 +471,17 @@ class GiteeAIImagePlugin(Star):
     async def _generate_minimal_selfie(self, prompt: str) -> Path:
         conf = self._get_minimal_selfie_config()
         if not conf["api_base_url"]:
-            raise RuntimeError("未配置 API 地址")
+            raise RuntimeError("鏈厤缃?API 鍦板潃")
         if not conf["model"]:
-            raise RuntimeError("未配置模型")
+            raise RuntimeError("鏈厤缃ā鍨?)
         if not conf["api_token"]:
-            raise RuntimeError("未配置令牌")
+            raise RuntimeError("鏈厤缃护鐗?)
 
         size_arg = self._resolve_minimal_selfie_size_arg(conf)
-        use_local_files = self._should_use_local_reference_files(conf)
-        if use_local_files:
-            if not conf["resolved_reference_images"]:
-                raise RuntimeError("当前接口需要配置本地参考图文件")
-        elif not conf["reference_image_urls"]:
-            raise RuntimeError("未配置参考图 URL")
+        images = self._load_minimal_selfie_reference_file_bytes()
 
         backends = self._get_minimal_selfie_backends()
         chat_backend = backends[-1]
-
-        if not use_local_files:
-            try:
-                return await chat_backend.edit(
-                    prompt,
-                    [],
-                    model=conf["model"],
-                    size=size_arg,
-                    input_image_urls=conf["reference_image_urls"],
-                )
-            except Exception as exc:
-                logger.warning(
-                    "[GroupSelfieOnly] remote URL edit via %s failed, falling back to downloaded uploads: %s",
-                    chat_backend.__class__.__name__,
-                    exc,
-                )
-
-        if use_local_files:
-            images = self._load_minimal_selfie_reference_file_bytes(conf)
-        else:
-            images = []
-            for url in conf["reference_image_urls"]:
-                data = await download_image(url)
-                if not data:
-                    raise RuntimeError(f"参考图下载失败: {url}")
-                images.append(data)
 
         last_error: Exception | None = None
         fallback_backends = [chat_backend] + [
@@ -583,11 +498,11 @@ class GiteeAIImagePlugin(Star):
             except Exception as exc:
                 last_error = exc
                 logger.warning(
-                    "[GroupSelfieOnly] backend %s failed, trying next backend: %s",
+                    "[PureSelfie] backend %s failed, trying next backend: %s",
                     backend.__class__.__name__,
                     exc,
                 )
-        raise last_error or RuntimeError("没有可用的生图后端")
+        raise last_error or RuntimeError("娌℃湁鍙敤鐨勭敓鍥惧悗绔?)
 
     async def _begin_user_job(self, user_id: str) -> bool:
         uid = str(user_id or "").strip()
@@ -621,14 +536,14 @@ class GiteeAIImagePlugin(Star):
             return SendImageResult(ok=True)
         except Exception as exc:
             last_error = str(exc)
-            logger.warning("[GroupSelfieOnly] image send failed, fallback to file: %s", exc)
+            logger.warning("[PureSelfie] image send failed, fallback to file: %s", exc)
         try:
             if path.exists() and path.stat().st_size <= self.IMAGE_AS_FILE_THRESHOLD_BYTES:
                 await event.send(event.chain_result([File.fromFileSystem(str(path))]))
                 return SendImageResult(ok=True, reason="file_fallback")
         except Exception as exc:
             last_error = str(exc)
-            logger.warning("[GroupSelfieOnly] file fallback send failed: %s", exc)
+            logger.warning("[PureSelfie] file fallback send failed: %s", exc)
         return SendImageResult(ok=False, reason="send_failed", last_error=last_error)
 
     @staticmethod
@@ -657,8 +572,16 @@ class GiteeAIImagePlugin(Star):
             return
 
         message_text = str(getattr(event, "message_str", "") or "").strip()
-        if not message_text or message_text.startswith(("/", "!", "？", ".", "。", "，")):
+        if not message_text or message_text.startswith(("/", "!", "锛?, ".", "銆?, "锛?)):
             return
+
+        # ignore_keywords check: skip entirely if message contains any keyword
+        conf = self._get_minimal_selfie_config()
+        ignore_kws = [kw.lower() for kw in conf.get("ignore_keywords", []) if kw.strip()]
+        if ignore_kws:
+            msg_lower = message_text.lower()
+            if any(kw in msg_lower for kw in ignore_kws):
+                return  # completely skip, don't stop_event, let other handlers process
 
         should_generate, llm_prompt = await self._judge_minimal_selfie_request(message_text)
         if not should_generate:
@@ -675,7 +598,7 @@ class GiteeAIImagePlugin(Star):
         user_id = str(event.get_sender_id() or "").strip()
         if not await self._begin_user_job(user_id):
             await self._release_minimal_selfie_group_quota(group_id)
-            yield event.plain_result("你当前还有一张自拍任务在处理中，稍等一下再发。")
+            yield event.plain_result("浣犲綋鍓嶈繕鏈変竴寮犺嚜鎷嶄换鍔″湪澶勭悊涓紝绋嶇瓑涓€涓嬪啀鍙戙€?)
             event.stop_event()
             return
 
@@ -690,13 +613,13 @@ class GiteeAIImagePlugin(Star):
                 await self._release_minimal_selfie_group_quota(group_id)
                 await mark_failed(event)
                 yield event.plain_result(
-                    f"图片发送失败：{sent.reason or sent.last_error or 'unknown'}"
+                    f"鍥剧墖鍙戦€佸け璐ワ細{sent.reason or sent.last_error or 'unknown'}"
                 )
         except Exception as exc:
             await self._release_minimal_selfie_group_quota(group_id)
             await mark_failed(event)
             yield event.plain_result(
-                f"自拍生成失败：{self._summarize_status_text(exc, fallback='unknown error')}"
+                f"鑷媿鐢熸垚澶辫触锛歿self._summarize_status_text(exc, fallback='unknown error')}"
             )
         finally:
             await self._end_user_job(user_id)

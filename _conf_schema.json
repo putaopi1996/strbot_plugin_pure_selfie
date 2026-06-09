@@ -20,33 +20,12 @@
         "hint": "会和 LLM 从群消息里补全出的提示词一起拼接后发送给生图模型。",
         "default": "realistic phone selfie, natural skin texture, candid composition, single person, no collage, no text overlay, no watermark"
       },
-      "reference_input_mode": {
-        "type": "string",
-        "description": "参考图输入模式",
-        "options": [
-          "url",
-          "local_file"
-        ],
-        "hint": "Google 官方 Gemini OpenAI 兼容接口建议使用 local_file，本地文件会作为参考图字节上传。",
-        "default": "url"
-      },
-      "reference_image_urls": {
-        "type": "list",
-        "description": "参考图 URL 列表",
-        "hint": "非 Google 官方接口可直接填写图床地址。所有 URL 都会被当作同一身份的参考图。",
+      "reference_images": {
+        "type": "file",
+        "description": "参考人像（可多张）",
+        "hint": "建议上传清晰正脸照，可多张做不同角度参考。",
+        "file_types": ["jpg", "jpeg", "png", "webp"],
         "default": []
-      },
-      "reference_image_files": {
-        "type": "list",
-        "description": "参考图本地文件路径列表",
-        "hint": "Google 官方 Gemini OpenAI 兼容接口请优先使用这一项，填写插件运行机器上的图片绝对路径。",
-        "default": []
-      },
-      "reference_image_dir": {
-        "type": "string",
-        "description": "参考图本地目录",
-        "hint": "可填写 Docker 容器内目录。插件启动时会自动扫描目录下的 png/jpg/jpeg/webp/gif 文件，并在日志里输出扫描结果。",
-        "default": ""
       },
       "api_base_url": {
         "type": "string",
@@ -75,6 +54,12 @@
           "2048x2048"
         ],
         "default": "auto"
+      },
+      "ignore_keywords": {
+        "type": "list",
+        "description": "排除关键词",
+        "hint": "消息中包含任一关键词时，本插件完全不介入（不调用 LLM 判断、不触发生图）。用于避免和其他插件冲突。",
+        "default": []
       },
       "group_rules": {
         "type": "template_list",

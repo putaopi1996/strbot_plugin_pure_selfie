@@ -79,6 +79,37 @@ class _DummyFilter:
         return decorator_factory
 
 
+class _StubRefsManager:
+    """Stub that returns preset bytes for testing."""
+
+    def __init__(self, refs_dir=None):
+        self.refs_dir = refs_dir or Path("/tmp/stub-refs")
+        self._files: list[Path] = []
+        self._bytes: list[bytes] = [b"ref-image-a", b"ref-image-b"]
+
+    def sync(self, config_entries):
+        from dataclasses import dataclass
+
+        @dataclass
+        class _SyncResult:
+            persisted: int = 0
+            skipped: int = 0
+            orphans_removed: int = 0
+            errors: int = 0
+            total_files: int = 2
+            total_bytes: int = 22
+
+        return _SyncResult()
+
+    def list_reference_files(self) -> list[Path]:
+        if self._files:
+            return self._files
+        return [Path("/tmp/stub-refs/a.png"), Path("/tmp/stub-refs/b.png")]
+
+    def load_reference_bytes(self) -> list[bytes]:
+        return self._bytes
+
+
 def _clear_modules():
     for name in list(sys.modules):
         if name.startswith(PACKAGE_NAME) or name in {
@@ -155,6 +186,10 @@ def _load_module():
         close_session=_async_noop_fn,
         download_image=_async_download_stub,
     )
+    _install_stub_module(
+        f"{CORE_PACKAGE_NAME}.uploaded_refs",
+        UploadedRefsManager=_StubRefsManager,
+    )
 
     spec = importlib.util.spec_from_file_location(MAIN_MODULE_NAME, ROOT / "main.py")
     module = importlib.util.module_from_spec(spec)
@@ -190,19 +225,10 @@ class MinimalSelfieConfigTests(unittest.TestCase):
                     "enabled": True,
                     "enabled_groups": ["10001", "10002"],
                     "preset_prompt": "cinematic selfie",
-                    "reference_input_mode": "local_file",
-                    "reference_image_urls": [
-                        "https://img.example.com/a.jpg",
-                        "https://img.example.com/b.jpg",
-                    ],
-                    "reference_image_files": [
-                        "E:/refs/a.jpg",
-                        "E:/refs/b.jpg",
-                    ],
-                    "reference_image_dir": "E:/refs",
                     "api_base_url": "https://api.example.com/v1",
                     "model": "gpt-image-1",
                     "api_token": "token-123",
+                    "ignore_keywords": ["画图", " 生成 ", "", "  "],
                     "group_rules": [
                         {
                             "group_id": "10001",
@@ -219,19 +245,16 @@ class MinimalSelfieConfigTests(unittest.TestCase):
         self.assertTrue(conf["enabled"])
         self.assertEqual(conf["enabled_groups"], ["10001", "10002"])
         self.assertEqual(conf["preset_prompt"], "cinematic selfie")
-        self.assertEqual(conf["reference_input_mode"], "local_file")
-        self.assertEqual(
-            conf["reference_image_urls"],
-            ["https://img.example.com/a.jpg", "https://img.example.com/b.jpg"],
-        )
-        self.assertEqual(
-            conf["reference_image_files"],
-            ["E:/refs/a.jpg", "E:/refs/b.jpg"],
-        )
-        self.assertEqual(conf["reference_image_dir"], "E:/refs")
         self.assertEqual(conf["api_base_url"], "https://api.example.com/v1")
         self.assertEqual(conf["model"], "gpt-image-1")
         self.assertEqual(conf["api_token"], "token-123")
+        self.assertEqual(conf["image_size"], "auto")
+        self.assertEqual(conf["ignore_keywords"], ["画图", "生成"])
+        self.assertNotIn("reference_input_mode", conf)
+        self.assertNotIn("reference_image_urls", conf)
+        self.assertNotIn("reference_image_files", conf)
+        self.assertNotIn("reference_image_dir", conf)
+        self.assertNotIn("resolved_reference_images", conf)
 
     def test_google_openai_base_url_is_normalized(self):
         mod = _load_module()
@@ -291,36 +314,30 @@ class MinimalSelfieConfigTests(unittest.TestCase):
             config={
                 "minimal_selfie": {
                     "preset_prompt": "realistic phone selfie",
-                    "reference_image_urls": [
-                        "https://img.example.com/1.jpg",
-                        "https://img.example.com/2.jpg",
-                    ],
                 }
             },
         )
+        # Ensure _refs_manager is set with stub that has 2 files
+        plugin._refs_manager = _StubRefsManager()
 
         prompt = plugin._build_minimal_selfie_prompt("grey hoodie, elevator mirror")
 
         self.assertIn("realistic phone selfie", prompt)
         self.assertIn("grey hoodie, elevator mirror", prompt)
-        self.assertIn("https://img.example.com/1.jpg", prompt)
-        self.assertIn("https://img.example.com/2.jpg", prompt)
+        self.assertIn("2 files", prompt)
+        self.assertIn("attached separately", prompt)
+        # URLs should NOT appear in the prompt
+        self.assertNotIn("https://", prompt)
 
 
 class MinimalSelfieRuntimeTests(unittest.IsolatedAsyncioTestCase):
-    async def test_generate_minimal_selfie_google_uses_local_reference_files(self):
+    async def test_generate_minimal_selfie_uses_local_reference_bytes(self):
         mod = _load_module()
         plugin = mod.GiteeAIImagePlugin(
             context=types.SimpleNamespace(),
             config={
                 "minimal_selfie": {
                     "enabled": True,
-                    "reference_input_mode": "local_file",
-                    "reference_image_files": [],
-                    "reference_image_urls": [
-                        "https://img.example.com/1.jpg",
-                    ],
-                    "reference_image_dir": "",
                     "api_base_url": "https://generativelanguage.googleapis.com/v1beta",
                     "model": "gemini-3.1-flash-image-preview",
                     "api_token": "token-123",
@@ -330,16 +347,10 @@ class MinimalSelfieRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
         await plugin.initialize()
 
-        ref_dir = Path.cwd() / ".tmp-minimal-selfie-tests"
-        ref_dir.mkdir(parents=True, exist_ok=True)
-        ref_a = ref_dir / "google-ref-a.png"
-        ref_b = ref_dir / "google-ref-b.png"
-        ref_a.write_bytes(b"file-a")
-        ref_b.write_bytes(b"file-b")
-        plugin.config["minimal_selfie"]["reference_image_files"] = [
-            str(ref_a),
-            str(ref_b),
-        ]
+        # Inject stub refs manager with known bytes
+        stub_refs = _StubRefsManager()
+        stub_refs._bytes = [b"file-a", b"file-b"]
+        plugin._refs_manager = stub_refs
 
         class _ChatFileBackend:
             async def edit(self, prompt, images, **kwargs):
@@ -350,59 +361,12 @@ class MinimalSelfieRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         chat_backend = _ChatFileBackend()
         plugin._minimal_selfie_chat_backend = chat_backend
-        mod.download_image = _download_should_not_run
 
         result = await plugin._generate_minimal_selfie("mirror selfie")
 
         self.assertEqual(result, Path("/tmp/chat-file-success.jpg"))
         self.assertEqual(chat_backend.images, [b"file-a", b"file-b"])
         self.assertNotIn("input_image_urls", chat_backend.kwargs)
-
-    async def test_generate_minimal_selfie_scans_reference_image_dir(self):
-        mod = _load_module()
-        plugin = mod.GiteeAIImagePlugin(
-            context=types.SimpleNamespace(),
-            config={
-                "minimal_selfie": {
-                    "enabled": True,
-                    "reference_input_mode": "local_file",
-                    "reference_image_files": [],
-                    "reference_image_dir": "",
-                    "api_base_url": "https://generativelanguage.googleapis.com/v1beta",
-                    "model": "gemini-3.1-flash-image-preview",
-                    "api_token": "token-123",
-                    "image_size": "1024x1024",
-                }
-            },
-        )
-        await plugin.initialize()
-
-        ref_dir = Path.cwd() / ".tmp-minimal-selfie-tests" / "ref-dir"
-        ref_dir.mkdir(parents=True, exist_ok=True)
-        (ref_dir / "a.png").write_bytes(b"dir-a")
-        (ref_dir / "b.jpg").write_bytes(b"dir-b")
-        (ref_dir / "note.txt").write_text("skip", encoding="utf-8")
-        plugin.config["minimal_selfie"]["reference_image_dir"] = str(ref_dir)
-
-        class _ChatFileBackend:
-            async def edit(self, prompt, images, **kwargs):
-                self.images = images
-                self.kwargs = kwargs
-                return Path("/tmp/chat-dir-success.jpg")
-
-        chat_backend = _ChatFileBackend()
-        plugin._minimal_selfie_chat_backend = chat_backend
-        mod.download_image = _download_should_not_run
-
-        result = await plugin._generate_minimal_selfie("mirror selfie")
-        conf = plugin._get_minimal_selfie_config()
-
-        self.assertEqual(result, Path("/tmp/chat-dir-success.jpg"))
-        self.assertEqual(chat_backend.images, [b"dir-a", b"dir-b"])
-        self.assertEqual(
-            conf["resolved_reference_images"],
-            [str(ref_dir / "a.png"), str(ref_dir / "b.jpg")],
-        )
 
     async def test_generate_minimal_selfie_auto_size_omits_size_argument(self):
         mod = _load_module()
@@ -411,9 +375,6 @@ class MinimalSelfieRuntimeTests(unittest.IsolatedAsyncioTestCase):
             config={
                 "minimal_selfie": {
                     "enabled": True,
-                    "reference_image_urls": [
-                        "https://img.example.com/1.jpg",
-                    ],
                     "api_base_url": "https://api.example.com/v1",
                     "model": "nano-banana",
                     "api_token": "token-123",
@@ -423,62 +384,23 @@ class MinimalSelfieRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
         await plugin.initialize()
 
-        class _ChatUrlBackend:
+        # Inject stub refs manager with known bytes
+        stub_refs = _StubRefsManager()
+        stub_refs._bytes = [b"ref-img"]
+        plugin._refs_manager = stub_refs
+
+        class _ChatBackend:
             async def edit(self, prompt, images, **kwargs):
                 self.kwargs = kwargs
                 return Path("/tmp/chat-auto-size.jpg")
 
-        chat_backend = _ChatUrlBackend()
+        chat_backend = _ChatBackend()
         plugin._minimal_selfie_chat_backend = chat_backend
-        mod.download_image = _download_should_not_run
 
         result = await plugin._generate_minimal_selfie("mirror selfie")
 
         self.assertEqual(result, Path("/tmp/chat-auto-size.jpg"))
         self.assertIsNone(chat_backend.kwargs["size"])
-
-    async def test_generate_minimal_selfie_prefers_chat_url_input_before_downloading(self):
-        mod = _load_module()
-        plugin = mod.GiteeAIImagePlugin(
-            context=types.SimpleNamespace(),
-            config={
-                "minimal_selfie": {
-                    "enabled": True,
-                    "reference_image_urls": [
-                        "https://img.example.com/1.jpg",
-                        "https://img.example.com/2.jpg",
-                    ],
-                    "api_base_url": "https://api.example.com/v1/chat/completions",
-                    "model": "nano-banana",
-                    "api_token": "token-123",
-                    "image_size": "1024x1024",
-                }
-            },
-        )
-        await plugin.initialize()
-
-        class _ChatUrlBackend:
-            async def edit(self, prompt, images, **kwargs):
-                self.prompt = prompt
-                self.images = images
-                self.kwargs = kwargs
-                return Path("/tmp/chat-url-success.jpg")
-
-        chat_backend = _ChatUrlBackend()
-        plugin._minimal_selfie_chat_backend = chat_backend
-        mod.download_image = _download_should_not_run
-
-        result = await plugin._generate_minimal_selfie("mirror selfie")
-
-        self.assertEqual(result, Path("/tmp/chat-url-success.jpg"))
-        self.assertEqual(chat_backend.images, [])
-        self.assertEqual(
-            chat_backend.kwargs["input_image_urls"],
-            [
-                "https://img.example.com/1.jpg",
-                "https://img.example.com/2.jpg",
-            ],
-        )
 
     async def test_generate_minimal_selfie_falls_back_to_chat_backend(self):
         mod = _load_module()
@@ -487,10 +409,6 @@ class MinimalSelfieRuntimeTests(unittest.IsolatedAsyncioTestCase):
             config={
                 "minimal_selfie": {
                     "enabled": True,
-                    "reference_image_urls": [
-                        "https://img.example.com/1.jpg",
-                        "https://img.example.com/2.jpg",
-                    ],
                     "api_base_url": "https://api.example.com/v1/images/generations",
                     "model": "nano-banana",
                     "api_token": "token-123",
@@ -499,6 +417,11 @@ class MinimalSelfieRuntimeTests(unittest.IsolatedAsyncioTestCase):
             },
         )
         await plugin.initialize()
+
+        # Inject stub refs manager with known bytes
+        stub_refs = _StubRefsManager()
+        stub_refs._bytes = [b"ref-img"]
+        plugin._refs_manager = stub_refs
 
         class _CompatFailBackend:
             async def edit(self, *args, **kwargs):
@@ -517,17 +440,13 @@ class MinimalSelfieRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, Path("/tmp/chat-success.jpg"))
 
-    async def test_generate_minimal_selfie_prefers_chat_byte_fallback_before_compat(self):
+    async def test_generate_minimal_selfie_raises_when_no_refs(self):
         mod = _load_module()
         plugin = mod.GiteeAIImagePlugin(
             context=types.SimpleNamespace(),
             config={
                 "minimal_selfie": {
                     "enabled": True,
-                    "reference_image_urls": [
-                        "https://img.example.com/1.jpg",
-                        "https://img.example.com/2.jpg",
-                    ],
                     "api_base_url": "https://api.example.com/v1",
                     "model": "nano-banana",
                     "api_token": "token-123",
@@ -537,33 +456,13 @@ class MinimalSelfieRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
         await plugin.initialize()
 
-        class _ChatBackend:
-            def __init__(self):
-                self.calls = []
+        # Inject stub refs manager with NO bytes
+        stub_refs = _StubRefsManager()
+        stub_refs._bytes = []
+        plugin._refs_manager = stub_refs
 
-            async def edit(self, prompt, images, **kwargs):
-                self.calls.append({"images": images, "kwargs": kwargs})
-                if kwargs.get("input_image_urls"):
-                    raise RuntimeError("remote url path failed")
-                return Path("/tmp/chat-byte-success.jpg")
-
-        class _CompatBackend:
-            def __init__(self):
-                self.calls = 0
-
-            async def edit(self, *args, **kwargs):
-                self.calls += 1
-                raise RuntimeError("compat should not run first")
-
-        plugin._minimal_selfie_chat_backend = _ChatBackend()
-        plugin._minimal_selfie_backend = _CompatBackend()
-        mod.download_image = _async_download_stub
-
-        result = await plugin._generate_minimal_selfie("mirror selfie")
-
-        self.assertEqual(result, Path("/tmp/chat-byte-success.jpg"))
-        self.assertEqual(len(plugin._minimal_selfie_chat_backend.calls), 2)
-        self.assertEqual(plugin._minimal_selfie_backend.calls, 0)
+        with self.assertRaises(RuntimeError):
+            await plugin._generate_minimal_selfie("mirror selfie")
 
     async def test_group_daily_limit_uses_beijing_date_bucket(self):
         mod = _load_module()
