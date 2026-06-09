@@ -81,18 +81,25 @@ class UploadedRefsManager:
 
         return filepath
 
-    def sync(self, config_entries: list, *, data_dir: Path | None = None) -> SyncResult:
+    def sync(self, config_entries: list, *, data_dir: Path | None = None, search_dirs: list[Path] | None = None) -> SyncResult:
         """Full sync: persist new entries from config, remove orphans.
 
         Config entries can be:
         - list of dicts: [{"name": "...", "data": "<base64>", "type": "..."}]
         - list of strings: ["files/minimal_selfie/reference_images/img1.png", ...]
-          (relative paths resolved against data_dir)
+          (relative paths resolved against search_dirs)
 
         Only magic bytes are trusted for format detection.
         """
         result = SyncResult()
         valid_hashes: set[str] = set()
+
+        # Build list of directories to search for relative paths
+        dirs_to_search: list[Path] = []
+        if search_dirs:
+            dirs_to_search.extend(search_dirs)
+        elif data_dir:
+            dirs_to_search.append(data_dir)
 
         for entry in config_entries:
             data: bytes | None = None
@@ -100,17 +107,30 @@ class UploadedRefsManager:
             if isinstance(entry, str):
                 # Entry is a file path (AstrBot WebUI saves uploaded files as relative paths)
                 file_path = Path(entry)
-                if not file_path.is_absolute() and data_dir:
-                    file_path = data_dir / entry
-                if not file_path.exists() or not file_path.is_file():
+                if file_path.is_absolute():
+                    resolved = file_path
+                else:
+                    # Try each search directory
+                    resolved = None
+                    for base in dirs_to_search:
+                        candidate = base / entry
+                        if candidate.exists() and candidate.is_file():
+                            resolved = candidate
+                            break
+                    if resolved is None:
+                        result.errors += 1
+                        logger.warning("Sync: file not found in any search dir: %s (tried: %s)", entry, [str(d) for d in dirs_to_search])
+                        continue
+
+                if not resolved.exists() or not resolved.is_file():
                     result.errors += 1
-                    logger.warning("Sync: file not found: %s", file_path)
+                    logger.warning("Sync: file not found: %s", resolved)
                     continue
                 try:
-                    data = file_path.read_bytes()
+                    data = resolved.read_bytes()
                 except Exception as exc:
                     result.errors += 1
-                    logger.warning("Sync: failed to read file %s: %s", file_path, exc)
+                    logger.warning("Sync: failed to read file %s: %s", resolved, exc)
                     continue
 
             elif isinstance(entry, dict):

@@ -55,7 +55,20 @@ class GiteeAIImagePlugin(Star):
         reference_images = self.config.get("minimal_selfie", {}).get("reference_images", [])
         if not isinstance(reference_images, list):
             reference_images = []
-        sync_result = self._refs_manager.sync(reference_images, data_dir=Path(self.data_dir))
+        # AstrBot WebUI saves file paths relative to its working directory (cwd),
+        # not the plugin's data_dir. Try multiple base directories.
+        search_dirs = [
+            Path.cwd(),                  # AstrBot working directory
+            Path(self.data_dir),         # plugin data directory
+            Path(self.data_dir).parent,  # parent (e.g. data/)
+        ]
+        logger.info(
+            "[PureSelfie] reference_images config: %s, data_dir=%s, cwd=%s",
+            reference_images,
+            self.data_dir,
+            Path.cwd(),
+        )
+        sync_result = self._refs_manager.sync(reference_images, search_dirs=search_dirs)
         logger.info(
             "[PureSelfie] refs synced: %d files, %d bytes total",
             sync_result.total_files,
