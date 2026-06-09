@@ -1,4 +1,5 @@
 aiofiles>=23
 aiohttp>=3.9,<4
+google-genai>=1.0
 httpx>=0.24,<1
 openai>=1.97

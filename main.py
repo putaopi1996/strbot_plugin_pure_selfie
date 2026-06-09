@@ -15,6 +15,7 @@ from astrbot.api.message_components import File, Image
 from astrbot.api.star import Context, Star, StarTools
 
 from .core.emoji_feedback import mark_failed, mark_processing, mark_success
+from .core.gemini_native_backend import GeminiNativeBackend
 from .core.image_manager import ImageManager
 from .core.openai_chat_image_backend import OpenAIChatImageBackend
 from .core.openai_compat_backend import OpenAICompatBackend
@@ -485,6 +486,17 @@ class GiteeAIImagePlugin(Star):
         if self.imgr is None:
             raise RuntimeError("image manager is not initialized")
         conf = self._get_minimal_selfie_config()
+
+        # For Google official Gemini API, use native generateContent backend (avoids OpenAI compat layer issues)
+        if self._is_google_official_openai_base_url(conf["api_base_url"]):
+            native = GeminiNativeBackend(
+                imgr=self.imgr,
+                api_key=conf["api_token"],
+                model=conf["model"],
+                timeout=120,
+            )
+            return [native]
+
         if self._minimal_selfie_chat_backend is None:
             self._minimal_selfie_chat_backend = OpenAIChatImageBackend(
                 imgr=self.imgr,
@@ -496,8 +508,6 @@ class GiteeAIImagePlugin(Star):
                 supports_edit=True,
                 edit_request_mode="stream",
             )
-        if self._is_google_official_openai_base_url(conf["api_base_url"]):
-            return [self._minimal_selfie_chat_backend]
         compat_backend = self._get_minimal_selfie_backend()
         return [compat_backend, self._minimal_selfie_chat_backend]
 
