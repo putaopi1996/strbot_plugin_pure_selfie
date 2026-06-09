@@ -91,6 +91,12 @@ class UploadedRefsManager:
         valid_hashes: set[str] = set()
 
         for entry in config_entries:
+            # Skip non-dict entries (e.g. strings from legacy config or empty WebUI state)
+            if not isinstance(entry, dict):
+                result.errors += 1
+                logger.warning("Sync: skipping non-dict entry: %s", type(entry).__name__)
+                continue
+
             # Decode base64 data
             raw_data = entry.get("data", "")
             if not raw_data:

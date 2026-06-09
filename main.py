@@ -53,6 +53,8 @@ class GiteeAIImagePlugin(Star):
         # Initialize UploadedRefsManager and sync reference images
         self._refs_manager = UploadedRefsManager(Path(self.data_dir) / "uploaded_refs")
         reference_images = self.config.get("minimal_selfie", {}).get("reference_images", [])
+        if not isinstance(reference_images, list):
+            reference_images = []
         sync_result = self._refs_manager.sync(reference_images)
         logger.info(
             "[PureSelfie] refs synced: %d files, %d bytes total",
